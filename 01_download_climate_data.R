@@ -7,6 +7,11 @@ library(dplyr)
 library(ggplot2)
 library(lubridate)
 
+if (!dir.exists('images')) {
+  message('Directory images will be created at ', getwd())
+  dir.create('images')
+}
+
 # Inizialización rgee ----
 ee_Initialize(drive = TRUE)
 
@@ -15,7 +20,7 @@ cambio_unidades <-  function(img) {
 
   precip = img$expression(
     'pp * 1000', list(
-      pp = img$select('total_precipitation')
+      pp = img$select('total_precipitation_sum')
     )
   )$rename('total_precipitation_mm')
   
@@ -60,22 +65,22 @@ my_polygons_country <- ee$FeatureCollection("FAO/GAUL/2015/level1")$
   select(c("ADM1_NAME","Shape_Area", "Shape_Leng"))$
   map(select_polygons)
 
-my_polygons_province <-
-  my_polygons_country$
-  filter(ee$Filter$inList('ADM1_NAME', 
-                          list("La Pampa", "Buenos Aires", "Cordoba",  
-                               "Santa Fe", "Entre Rios", "Santiago Del Estero",  
-                               "Corrientes", "Salta", "Chaco",
-                               "Tucuman", "Jujuy")
-  )
-  )$map(select_polygons)
+# my_polygons_province <-
+#   my_polygons_country$
+#   filter(ee$Filter$inList('ADM1_NAME', 
+#                           list("La Pampa", "Buenos Aires", "Cordoba",  
+#                                "Santa Fe", "Entre Rios", "Santiago Del Estero",  
+#                                "Corrientes", "Salta", "Tucuman", "Jujuy")
+#   )
+#   )$map(select_polygons)
+# 
+# my_polygons_province_sf <- ee_as_sf(my_polygons_province)
 
-my_polygons_province_sf <- ee_as_sf(my_polygons_province)
 ## Lectura archivo virus ----
 my_deasease_data <- sf::st_read("data/virus.gpkg")
 
 # Número de observaciones
-cat("Número de observaciones: ", nrow(my_deasease_data))
+cat("Número de observaciones: ", nrow(my_deasease_data), "\n")
 
 # Número de sitios
 n_sitios <- 
@@ -84,16 +89,24 @@ n_sitios <-
   sf::st_as_sf() %>% 
   dplyr::distinct() %>% 
   nrow()
-cat("Número de sitios observados: ", n_sitios)
+cat("Número de sitios observados: ", n_sitios, "\n")
 
 ## Union Archivos ----
+my_polygons_country_sf <- ee_as_sf(my_polygons_country)
+
+my_polygons_country_sf$n_obs <- 
+  st_intersects(my_polygons_country_sf, 
+                my_deasease_data) %>%
+  lengths()
+
+my_polygons_province_sf <- 
+  my_polygons_country_sf %>%
+  filter(n_obs > 0)
+
 my_deasease_province_data <- 
   st_join(my_deasease_data, 
           my_polygons_province_sf, 
           largest = TRUE)
-
-
-my_polygons_country_sf <- ee_as_sf(my_polygons_country)
 
 # Mapa de sitios de muestreo
 muestreo <-
@@ -131,22 +144,25 @@ st_geometry(sf_table) <- 'geometry'
 sf_table <-
   my_deasease_province_data %>% 
   mutate(start_date = ifelse(Especie == 'Trigo', 
-                             paste0("20/3/",Año.de.Colecta), 
-                             paste0("21/9/",Año.de.Colecta)),
+                             paste0("20/3/", Año.de.Colecta), 
+                             paste0("21/9/", Año.de.Colecta)),
          start_date = ymd(as.Date(start_date, "%d/%m/%Y")),
          end_date = start_date %m+% months(3),
          end_date = ymd(as.Date(end_date, "%d/%m/%Y"))) %>% 
   rename(Anio_de_Colecta = Año.de.Colecta)
+
 ee_table <- sf_as_ee(sf_table) # Carga de sf como FeatureCollection
 
 # Otención de imágenes ---- 
+my_polygons_province <- sf_as_ee(my_polygons_province_sf)
+
 min_date <- min(as.Date(sf_table$start_date))
 max_date <- max(as.Date(sf_table$end_date))
 
-era5_ee <- ee$ImageCollection("ECMWF/ERA5_LAND/HOURLY")$
+era5_ee <- ee$ImageCollection("ECMWF/ERA5_LAND/DAILY_RAW")$
   filterBounds(my_polygons_province$geometry())$
   filterDate(as.character(min_date), as.character(max_date))$
-  select(c('total_precipitation', 'temperature_2m', 'dewpoint_temperature_2m'))$
+  select(c('total_precipitation_sum', 'temperature_2m', 'dewpoint_temperature_2m'))$
   map(cambio_unidades)
 
 # https://github.com/csaybar/rgee/blob/examples//ImageCollection/overview.R
@@ -155,7 +171,7 @@ era5_resolution <- era5_ee$first()$projection()$nominalScale()
 cat("ERA5 resolution: ", era5_resolution$getInfo(), '\n')
 
 # Nombre de bandas
-bandNames = era5_ee$first()$bandNames()$getInfo()
+bandNames <- era5_ee$first()$bandNames()$getInfo()
 cat("Band Names: ", paste(bandNames, collapse = ", "), '\n')
 
 # Número de imágenes
@@ -170,7 +186,7 @@ range <- era5_ee$reduceColumns(
 
 col_min <- eedate_to_rdate(range$get("min"))
 col_max <- eedate_to_rdate(range$get("max"))
-cat("Date range: ", as.character(col_min), as.character(col_max), '\n')
+cat("Date range: ", as.character(col_min), " - ", as.character(col_max), '\n')
 
 # Extracción de variables bioclimáticas ----
 temporal_aggregate <- function(monthN, delta = 2, unit = 'week') {
@@ -236,6 +252,10 @@ if (file.exists("cache/statistics_mean_virus.rds")) {
                  sf = TRUE)
     }
   # statistics
+  if (!dir.exists('cache')) {
+    message('Directory cache will be created at ', getwd())
+    dir.create('cache')
+  }
   saveRDS(statistics, "cache/statistics_mean_virus.rds")
 }
 
