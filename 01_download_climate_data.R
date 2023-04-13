@@ -6,6 +6,7 @@ library(foreach)
 library(dplyr)
 library(ggplot2)
 library(lubridate)
+library(patchwork)
 
 if (!dir.exists('images')) {
   message('Directory images will be created at ', getwd())
@@ -455,7 +456,37 @@ ggsave('images/Figura_2_VariabilidadEspacialTemperaturaPromedio.png',
        width = 15,#10
        units = 'cm')
 
-library(patchwork)
+
+
+pp_promedio_ggplt <-
+  ggplot() + 
+  geom_stars(data = statistics_otono[,,,2]) +
+  geom_sf(data = my_polygons_province_sf, fill = NA) +
+  coord_sf(lims_method = "geometry_bbox", expand = FALSE) +
+  scale_fill_gradientn(limits = rain_range,
+                       colours = cptcity::cpt(pal = "colo_alpen_sky_rain_brolly")) +
+  labs(fill = "Precipitación\n(mm)",
+       y = NULL, x = NULL) +
+  theme(legend.position = 'bottom',
+        legend.key.width = unit(1.2,"cm"), 
+        axis.text.x = element_text(angle = 90))
+
+ptoro_promedio_ggplt <-
+  ggplot() + 
+  geom_stars(data = statistics_otono[,,,3]) +
+  geom_sf(data = my_polygons_province_sf, fill = NA) +
+  coord_sf(lims_method = "geometry_bbox", expand = FALSE) +
+  # facet_wrap(. ~ epoca) +
+  scale_fill_gradientn(limits = dewpt_range,
+                       colours = cptcity::cpt(pal = "idv_relative_humidity")) +
+  labs(fill = "Punto de rocío\n(°C)",
+       y = NULL, x = NULL) +
+  theme(legend.position = 'bottom',
+        legend.key.width = unit(1.2,"cm"), 
+        axis.text.x = element_text(angle = 90))
+
+
+
 pp_ptoro_prom_ggplt <-
   pp_promedio_ggplt +
   theme(#legend.position = 'right',
@@ -519,18 +550,6 @@ ggsave('images/Figura_3_PrecipitacionesTemperaturaPtoRocioPromedio.png',
 
 
 ## Figuras no presentadas ----
-pp_promedio_ggplt <-
-  ggplot() + 
-  geom_stars(data = statistics_otono[,,,2]) +
-  geom_sf(data = my_polygons_province_sf, fill = NA) +
-  coord_sf(lims_method = "geometry_bbox", expand = FALSE) +
-  scale_fill_gradientn(limits = rain_range,
-                       colours = cptcity::cpt(pal = "colo_alpen_sky_rain_brolly")) +
-  labs(fill = "Precipitación\n(mm)",
-       y = NULL, x = NULL) +
-  theme(legend.position = 'bottom',
-        legend.key.width = unit(1.2,"cm"), 
-        axis.text.x = element_text(angle = 90))
 
 ggsave('images/pp_promedio_roi.png',
        pp_promedio_ggplt,
@@ -539,19 +558,6 @@ ggsave('images/pp_promedio_roi.png',
        units = 'cm')
 
 
-ptoro_promedio_ggplt <-
-  ggplot() + 
-  geom_stars(data = statistics_otono[,,,3]) +
-  geom_sf(data = my_polygons_province_sf, fill = NA) +
-  coord_sf(lims_method = "geometry_bbox", expand = FALSE) +
-  # facet_wrap(. ~ epoca) +
-  scale_fill_gradientn(limits = dewpt_range,
-                       colours = cptcity::cpt(pal = "idv_relative_humidity")) +
-  labs(fill = "Punto de rocío\n(°C)",
-       y = NULL, x = NULL) +
-  theme(legend.position = 'bottom',
-        legend.key.width = unit(1.2,"cm"), 
-        axis.text.x = element_text(angle = 90))
 
 ggsave('images/puntorocio_promedio_roi.png',
        ptoro_promedio_ggplt,
@@ -607,7 +613,7 @@ temp_temporal_media <- pull(tempral_mean)
 rownames(temp_temporal_media) <- st_get_dimension_values(tempral_mean, 'band')
 colnames(temp_temporal_media) <- st_get_dimension_values(tempral_mean, 'time')
 temp_temporal_media
-temp_temporal_media[1,order(temp_temporal_media[1,])]
+temp_temporal_media[1, order(temp_temporal_media[1,])]
 # ggplot por epoca y año  -----
 
 temp_range <- calculate_range(statistics_province[,,,1,])
