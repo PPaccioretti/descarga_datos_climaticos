@@ -13,6 +13,11 @@ if (!dir.exists('images')) {
   dir.create('images')
 }
 
+if (!dir.exists('cache')) {
+  message('Directory cache will be created at ', getwd())
+  dir.create('cache')
+}
+
 # Inizialización rgee ----
 ee_Initialize(drive = TRUE)
 
@@ -65,17 +70,6 @@ my_polygons_country <- ee$FeatureCollection("FAO/GAUL/2015/level1")$
   filter(ee$Filter$eq('ADM0_NAME', 'Argentina'))$
   select(c("ADM1_NAME","Shape_Area", "Shape_Leng"))$
   map(select_polygons)
-
-# my_polygons_province <-
-#   my_polygons_country$
-#   filter(ee$Filter$inList('ADM1_NAME', 
-#                           list("La Pampa", "Buenos Aires", "Cordoba",  
-#                                "Santa Fe", "Entre Rios", "Santiago Del Estero",  
-#                                "Corrientes", "Salta", "Tucuman", "Jujuy")
-#   )
-#   )$map(select_polygons)
-# 
-# my_polygons_province_sf <- ee_as_sf(my_polygons_province)
 
 ## Lectura archivo virus ----
 my_deasease_data <- sf::st_read("data/virus.gpkg")
@@ -154,8 +148,33 @@ sf_table <-
 
 ee_table <- sf_as_ee(sf_table) # Carga de sf como FeatureCollection
 
-# Otención de imágenes ---- 
+# Otención de imágenes ----
 my_polygons_province <- sf_as_ee(my_polygons_province_sf)
+
+## DEM ----
+dem_ee <- ee$Image('CGIAR/SRTM90_V4')$
+  select('elevation')
+
+if (file.exists("cache/dem.rds")) {
+  dem <- readRDS("cache/dem.rds")
+} else {
+  dem <- rgee::ee_as_stars(
+    dem_ee,
+    my_polygons_province$geometry(),
+    scale = era5_resolution,
+    via = "drive"
+  ) %>%
+    stars::st_as_stars()
+  
+  # DEM
+  saveRDS(dem, "cache/dem.rds")
+}
+
+st_get_dimension_values(dem, "band")
+plot(dem)
+
+## Datos Meteorológicos ----
+
 
 min_date <- min(as.Date(sf_table$start_date))
 max_date <- max(as.Date(sf_table$end_date))
@@ -253,10 +272,6 @@ if (file.exists("cache/statistics_mean_virus.rds")) {
                  sf = TRUE)
     }
   # statistics
-  if (!dir.exists('cache')) {
-    message('Directory cache will be created at ', getwd())
-    dir.create('cache')
-  }
   saveRDS(statistics, "cache/statistics_mean_virus.rds")
 }
 
@@ -313,7 +328,7 @@ presAus_hpv_plt <-
     )
   )
 
-ggsave('images/Figura_5_presenciaAusencia_hpmwov.png',
+ggsave('images/Figura_4_presenciaAusencia_hpmwov.png',
        presAus_hpv_plt,
        height = 12.0,
        width = 15.0,
@@ -345,11 +360,45 @@ presAus_wsmv_plt <-
     )
   )
 
-ggsave('images/Figura_6_presenciaAusencia_wsmv.png',
+ggsave('images/Figura_5_presenciaAusencia_wsmv.png',
        presAus_wsmv_plt,
        height = 12.0,
        width = 15.0,
        units = 'cm')
+
+
+# Ajuste Modelo Logístico ----
+## Suma de cuadrados tipo III
+options(contrasts = c("contr.sum", "contr.poly"))
+
+## Seleccion de covariables para armar la formula
+isCovariable <- agrepl("temperature|dewpoint|total_precipitation", colnames(statistics), fixed = FALSE)
+covariable <- colnames(statistics)[isCovariable]
+covariable_fml <- paste(covariable, collapse = " + ")
+
+
+## Ajuste del modelo
+
+mdl_hpv <- 
+  glm(
+    paste("HPV", "~", covariable_fml),
+    family = binomial(link = "logit"),
+    data = statistics
+  )
+
+deviance(mdl_hpv)
+summary(mdl_hpv)
+
+mdl_wsmv <-
+  glm(
+    paste("WSMV", "~", covariable_fml),
+    family = binomial(link = "logit"),
+    data = statistics
+  )
+
+deviance(mdl_wsmv)
+summary(mdl_wsmv)
+
 
 ## Descarga para toda la zona y años muestreados ----
 
@@ -415,7 +464,7 @@ calculate_range <- function(x) {
 }
 
 
-# Media de temperatura para todos los años muestreados -----
+# Media de variables meteoroógica para todos los años muestreados -----
 statistics_otono <-
   st_apply(statistics_province[, , , , which(!primavera)], c(1, 2, 3), mean, na.rm = TRUE)
 
@@ -434,10 +483,40 @@ min(pull(statistics_otono[,,,3]), na.rm = TRUE)
 max(pull(statistics_otono[,,,3]), na.rm = TRUE)
 
 
+cat( "El promedio de temperatura para toda la " ,
+     "región fue de ",
+     round(mean(pull(statistics_otono[,,,1]), na.rm = TRUE), 1),
+     "°C, el valor máximo promedio observado en los años en estudio ",
+     "fue de ",
+     round(max(pull(statistics_otono[,,,1]), na.rm = TRUE), 1),
+     "°C, el valor mínimo promedio fue de " ,
+     round(min(pull(statistics_otono[,,,1]), na.rm = TRUE), 1),
+     "°C observándose en la zona "  ,
+     "noroeste de la región. ", 
+     "Las precipitaciones promedio para la región en estudio, ",
+     "fueron de ",
+     round(mean(pull(statistics_otono[,,,2]), na.rm = TRUE), 0),
+     "mm para otoño, variando entre ", 
+     round(min(pull(statistics_otono[,,,2]), na.rm = TRUE), 0),
+     "mm y ",
+     round(max(pull(statistics_otono[,,,2]), na.rm = TRUE), 0),
+     "mm. La temperatura de punto de rocío promedio fue de ",
+     round(mean(pull(statistics_otono[,,,3]), na.rm = TRUE), 1),
+     "°C. En el noroeste de la región en estudio se observaron ",
+     "las menores temperaturas de punto de rocío (",
+     round(min(pull(statistics_otono[,,,3]), na.rm = TRUE), 1),
+     "°C), por efecto de la gran altitud de esa zona.",
+     "\n",
+     sep = "")
+
+
+
+## Graficos ----
 
 temp_range <- calculate_range(statistics_otono[,,,1])
 rain_range <- calculate_range(statistics_otono[,,,2])
 dewpt_range <- calculate_range(statistics_otono[,,,3])
+
 
 temperatura_promedio_ggplt <- 
   ggplot() + 
@@ -450,13 +529,6 @@ temperatura_promedio_ggplt <-
        y = NULL, x = NULL) +
   theme(axis.text.x = element_text(angle = 90))
 
-ggsave('images/Figura_2_VariabilidadEspacialTemperaturaPromedio.png',
-       temperatura_promedio_ggplt,
-       height = 10,
-       width = 15,#10
-       units = 'cm')
-
-
 
 pp_promedio_ggplt <-
   ggplot() + 
@@ -467,9 +539,7 @@ pp_promedio_ggplt <-
                        colours = cptcity::cpt(pal = "colo_alpen_sky_rain_brolly")) +
   labs(fill = "Precipitación\n(mm)",
        y = NULL, x = NULL) +
-  theme(legend.position = 'bottom',
-        legend.key.width = unit(1.2,"cm"), 
-        axis.text.x = element_text(angle = 90))
+  theme(axis.text.x = element_text(angle = 90))
 
 ptoro_promedio_ggplt <-
   ggplot() + 
@@ -481,108 +551,73 @@ ptoro_promedio_ggplt <-
                        colours = cptcity::cpt(pal = "idv_relative_humidity")) +
   labs(fill = "Punto de rocío\n(°C)",
        y = NULL, x = NULL) +
-  theme(legend.position = 'bottom',
-        legend.key.width = unit(1.2,"cm"), 
-        axis.text.x = element_text(angle = 90))
+  theme(axis.text.x = element_text(angle = 90))
 
 
+dem_ggplt <- 
+  ggplot() + 
+  geom_stars(data = dem) +
+  geom_sf(data = my_polygons_province_sf, fill = NA) +
+  coord_sf(lims_method = "geometry_bbox", expand = FALSE) +
+  scale_fill_gradientn(colours = 
+                         cptcity::cpt(pal = "grass_elevation")) +
+  labs(fill = "Elevación\n(msnm)",
+       y = NULL, x = NULL) +
+  theme(axis.text.x = element_text(angle = 90))
 
-pp_ptoro_prom_ggplt <-
+
+temp_pp_ptoro_prom_dem_ggplt <-
+  temperatura_promedio_ggplt +
   pp_promedio_ggplt +
-  theme(#legend.position = 'right',
-    legend.key.width = unit(0.6, "cm"),
-    legend.box = "horizontal") +
-  guides(fill = guide_colourbar(title.position = "top", title.hjust = 0.5,
-                                  
-                                direction = "horizontal",
-                                # title.position = "top",
-                                label.position = "bottom",
-                                label.hjust = 0.5,
-                                # label.vjust = 1,
-                                label.theme = element_text(angle = 90)
-  )) +
-   plot_spacer() +
   ptoro_promedio_ggplt +
-  theme(legend.position = 'right',
-    legend.key.width = unit(0.7, "cm"),
-    legend.box = "horizontal") +
-  scale_fill_continuous(
-    guide = guide_legend(
-      direction = "horizontal",
-      title.position = "top",
-      label.position = "bottom",
-      label.hjust = 0.5,
-      label.vjust = 1,
-      label.theme = element_text(angle = 90)
-    )
-  ) + plot_layout(widths = c(4, 1 ,4))
-
-
-pp_ptoro_prom_ggplt <-
-  pp_promedio_ggplt +
-  theme(
-    #legend.position = 'right',
-    legend.key.width = unit(0.9, "cm"),
-    legend.box = "horizontal",
-    legend.text = element_text(
-      angle = 90,
-      hjust = 0.3,
-      vjust = 0.4
-    )
-  ) +
-  guides(fill = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
-  plot_spacer() +
-  ptoro_promedio_ggplt +
-  theme(#legend.position = 'right',
-    legend.key.width = unit(0.9, "cm"),
-    legend.box = "horizontal",) +
-  guides(fill = guide_colourbar(title.position = "top", title.hjust = 0.5)) + 
-  plot_layout(widths = c(5, 0.5, 5))
-
-
-ggsave('images/Figura_3_PrecipitacionesTemperaturaPtoRocioPromedio.png',
-       pp_ptoro_prom_ggplt,
-       height = 12,
-       width = 15.0,
+  dem_ggplt +
+  plot_annotation(tag_levels = 'a')
+  
+ggsave('images/Figura_2_TempPrecipitacionesTemperaturaPtoRocioPromedioDem.png',
+       temp_pp_ptoro_prom_dem_ggplt,
+       height = 11.8,
+       width = 15,#10
        units = 'cm')
+
+
+
 
 
 
 
 ## Figuras no presentadas ----
+# 
+# ggsave('images/pp_promedio_roi.png',
+#        pp_promedio_ggplt,
+#        height = 10,
+#        width = 15.0/2,
+#        units = 'cm')
+# 
+# 
+# 
+# ggsave('images/puntorocio_promedio_roi.png',
+#        ptoro_promedio_ggplt,
+#        height = 10,
+#        width = 15.86/2,
+#        units = 'cm')
 
-ggsave('images/pp_promedio_roi.png',
-       pp_promedio_ggplt,
-       height = 10,
-       width = 15.0/2,
-       units = 'cm')
 
-
-
-ggsave('images/puntorocio_promedio_roi.png',
-       ptoro_promedio_ggplt,
-       height = 10,
-       width = 15.86/2,
-       units = 'cm')
-
-
-## Temperatura promedio ----
-temperatura_ggplt <- 
+## Precipitacion promedio ----
+precipitacion_ggplt <- 
   ggplot() +
-  geom_stars(data = statistics_province[, , , 1, ]) +
+  geom_stars(data = statistics_province[, , , 2, ]) +
   geom_sf(data = my_polygons_province_sf, fill = NA, size = 0.2) +
   coord_sf(lims_method = "geometry_bbox", expand = FALSE) +
   facet_wrap(. ~ time,
              ncol = 5,
              labeller = estacion_label) +
-  scale_fill_gradientn(limits = temp_range,
-                       colours = cptcity::cpt(pal = "arendal_temperature")) +
-  labs(fill = "Temperatura\n(°C)",
+  scale_fill_gradientn(colours = cptcity::cpt(pal = "colo_alpen_sky_rain_brolly")) +
+  labs(fill = "Precipitación\n(mm)",
        y = NULL, x = NULL) +
   # theme_void() +
   theme(
-    # legend.position = 'bottom',
-    # legend.key.width = unit(1.5, "cm"),
+    legend.position = 'bottom',
+    legend.key.width = unit(1.3, "cm"),
     axis.text = element_blank(),
     axis.title = element_blank(),
     axis.ticks.length = unit(0, "pt"),
@@ -594,9 +629,9 @@ temperatura_ggplt <-
     axis.ticks.length.y.right = NULL
   )
 
-ggsave('images/Figura_4_VariabilidadEspacioTemporalTemperaturaPromedio.png',
-       temperatura_ggplt,
-       height = 14.52,
+ggsave('images/Figura_3_VariabilidadEspacioTemporalPrecipitacion.png',
+       precipitacion_ggplt,
+       height = 18.5,
        width = 15.00,
        units = 'cm')
 
@@ -613,7 +648,33 @@ temp_temporal_media <- pull(tempral_mean)
 rownames(temp_temporal_media) <- st_get_dimension_values(tempral_mean, 'band')
 colnames(temp_temporal_media) <- st_get_dimension_values(tempral_mean, 'time')
 temp_temporal_media
-temp_temporal_media[1, order(temp_temporal_media[1,])]
+
+# Temperaturas promedio de los años de muestreo
+temperaturas_promedio <- temp_temporal_media["0_temperature_2m_c", order(temp_temporal_media[1,])]
+
+# Rango de temperatura
+round(range(temperaturas_promedio), 1)
+# Anio con temperatura promedio menor
+which.min(temperaturas_promedio)
+# Anio con temperatura promedio mayor
+which.max(temperaturas_promedio)
+
+
+# Temperaturas promedio de los años de muestreo
+precipitaciones_promedio <-
+  temp_temporal_media["0_total_precipitation_mm", order(temp_temporal_media[1,])]
+
+# Rango de temperatura
+round(range(precipitaciones_promedio), 1)
+# Anio con temperatura promedio menor
+round(min(precipitaciones_promedio), 0)
+which.min(precipitaciones_promedio)
+# Anio con temperatura promedio mayor
+round(max(precipitaciones_promedio), 0)
+which.max(precipitaciones_promedio)
+
+
+
 # ggplot por epoca y año  -----
 
 temp_range <- calculate_range(statistics_province[,,,1,])
